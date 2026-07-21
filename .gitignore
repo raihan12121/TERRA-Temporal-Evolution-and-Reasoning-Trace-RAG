@@ -1,0 +1,17 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Vector database storage
+terra_vector_db/
+
+# Local configuration keys
+.env
+
+# Compiled bytecode
+__pycache__/
+*.pyc
+
+# Local JSON graph states
+terra_eeg_index.json

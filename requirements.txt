@@ -1,0 +1,15 @@
+google-genai
+chromadb
+networkx
+datasets
+eyecite
+pandas
+tqdm
+tabulate
+fastapi
+uvicorn
+python-dotenv
+pydantic
+rouge-score
+requests
+scipy
