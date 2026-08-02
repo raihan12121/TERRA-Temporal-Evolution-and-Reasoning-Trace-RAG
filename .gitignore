@@ -15,3 +15,8 @@ __pycache__/
 
 # Local JSON graph states
 terra_eeg_index.json
+
+# Temporary / Backup files
+*_backup.*
+*_final.json
+

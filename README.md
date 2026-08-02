@@ -41,7 +41,7 @@ Add your LLM API keys to .env:
 GEMINI_API_KEY=your_gemini_api_key_here
 
 # OpenAI API Key (Optional)
-OPENAI_API_KEY=your_openai_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
 
 # Google LLM Judge API Key
 GOOGLE_JUDGE_API_KEY=your_google_judge_api_key_here

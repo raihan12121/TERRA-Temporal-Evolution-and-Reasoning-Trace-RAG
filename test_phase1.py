@@ -12,11 +12,11 @@ print("=" * 60)
 
 # Item 1: Key Presence Confirmation
 print("\n--- ITEM 1: Key Presence Confirmation ---")
-openai_key = os.environ.get("OPENAI_API_KEY")
+groq_key = os.environ.get("GROQ_API_KEY")
 gemini_key = os.environ.get("GEMINI_API_KEY")
 judge_key = os.environ.get("GOOGLE_JUDGE_API_KEY") or os.environ.get("GEMINI_API_KEY_EVAL")
 
-print(f"OPENAI_API_KEY: Present={bool(openai_key)}, Length={len(openai_key) if openai_key else 0}")
+print(f"GROQ_API_KEY: Present={bool(groq_key)}, Length={len(groq_key) if groq_key else 0}")
 print(f"GEMINI_API_KEY: Present={bool(gemini_key)}, Length={len(gemini_key) if gemini_key else 0}")
 print(f"GOOGLE_JUDGE_API_KEY: Present={bool(judge_key)}, Length={len(judge_key) if judge_key else 0}")
 
