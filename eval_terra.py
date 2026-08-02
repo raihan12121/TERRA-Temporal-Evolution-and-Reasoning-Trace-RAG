@@ -448,11 +448,15 @@ def judge_answer(query: str, context: str, answer: str, is_direct_llm=False) -> 
         prompt = (
             f"{critic_preamble}\n\n"
             "Evaluate this RAG-system answer strictly against the retrieved context.\n\n"
-            f"Query: {query}\nRetrieved Context:\n{context[:3000]}\n\nGenerated Answer: {answer}\n\n"
+            # v25.2 fix: removed context[:3000] — judge now sees the full retrieved context,
+            # matching exactly what the generation model saw. Gemini Flash has a 1M-token
+            # context window; a 3,000-char cap was unjustified and invalidated faithfulness scores.
+            f"Query: {query}\nRetrieved Context:\n{context}\n\nGenerated Answer: {answer}\n\n"
             "Faithfulness (0.0–1.0): Is every fact in the answer supported by the context? "
             "Deduct heavily for any assertion not found in context.\n"
             "Relevance (0.0–1.0): Does the answer directly and fully address the query?"
         )
+
 
     try:
         response = generate_content_with_retry(

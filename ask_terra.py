@@ -143,8 +143,12 @@ class CleanResponseOpenAI:
         return t
 
 def generate_content_with_retry_openai(openai_client, model, contents, config=None, max_retries=5):
-    if len(contents) > 25000:
-        contents = contents[:25000] + "\n...[Context truncated to 25000 chars]..."
+    # v25.2 explicit cap: 100,000 chars (well within DeepSeek's 128K-token / ~96K-char context window).
+    # Raised from 25,000 (which truncated B07's ~34K-char prompt, cutting the user query).
+    # Kept as a safeguard against runaway graph traversals producing multi-MB contexts.
+    if len(contents) > 100000:
+        contents = contents[:100000] + "\n...[Context truncated to 100000 chars \u2014 exceeds DeepSeek context limit]..."
+
     # Model mapping: internal Gemini/Gemma alias -> actual DeepSeek model name (v25)
     model_mapping = {
         # Fast tier: routing, EASY-path, baselines, Smart Grader first attempt
