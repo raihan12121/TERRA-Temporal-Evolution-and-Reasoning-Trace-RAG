@@ -432,29 +432,38 @@ def judge_answer(query: str, context: str, answer: str, is_direct_llm=False) -> 
     """
     critic_preamble = (
         "You are a SKEPTICAL legal AI auditor. Your job is to find flaws, "
-        "hallucinations, and relevance gaps. Be strict. Do not be generous. "
-        "Penalize any answer that adds information not supported by the provided context."
+        "hallucinations, and relevance gaps. Be strict. Do not be generous."
+    )
+
+    json_instruction = (
+        "Output strictly a valid JSON object with keys:\n"
+        '  "faithfulness_score": float between 0.0 and 1.0,\n'
+        '  "faithfulness_reasoning": detailed explanation string,\n'
+        '  "relevance_score": float between 0.0 and 1.0,\n'
+        '  "relevance_reasoning": detailed explanation string.'
     )
 
     if is_direct_llm:
         prompt = (
             f"{critic_preamble}\n\n"
-            "Evaluate this answer for a legal query that was answered without retrieved context.\n\n"
-            f"Query: {query}\nGenerated Answer: {answer}\n\n"
-            "Faithfulness (0.0–1.0): Rate 1.0 only if legally accurate, 0.0 if hallucinated.\n"
-            "Relevance (0.0–1.0): Does it fully and directly answer the query?"
+            "Evaluate this direct LLM answer for a legal query (answered without retrieved context).\n\n"
+            f"Query: {query}\n"
+            f"Generated Answer: {answer}\n\n"
+            "Faithfulness (0.0–1.0): Rate 1.0 if legally accurate and factually correct, 0.0 if legally incorrect or hallucinated.\n"
+            "Relevance (0.0–1.0): Does the answer directly and fully address the query?\n\n"
+            f"{json_instruction}"
         )
     else:
         prompt = (
             f"{critic_preamble}\n\n"
             "Evaluate this RAG-system answer strictly against the retrieved context.\n\n"
-            # v25.2 fix: removed context[:3000] — judge now sees the full retrieved context,
-            # matching exactly what the generation model saw. Gemini Flash has a 1M-token
-            # context window; a 3,000-char cap was unjustified and invalidated faithfulness scores.
-            f"Query: {query}\nRetrieved Context:\n{context}\n\nGenerated Answer: {answer}\n\n"
-            "Faithfulness (0.0–1.0): Is every fact in the answer supported by the context? "
+            f"Query: {query}\n"
+            f"Retrieved Context:\n{context}\n\n"
+            f"Generated Answer: {answer}\n\n"
+            "Faithfulness (0.0–1.0): Is every fact in the answer supported by the retrieved context? "
             "Deduct heavily for any assertion not found in context.\n"
-            "Relevance (0.0–1.0): Does the answer directly and fully address the query?"
+            "Relevance (0.0–1.0): Does the answer directly and fully address the query?\n\n"
+            f"{json_instruction}"
         )
 
 
@@ -910,7 +919,9 @@ def run_judging_only(gen_input="terra_generations.json", raw_output="terra_eval_
             "context_full": ctx,
             "generation_error": g.get("generation_error", False),
             "faithfulness": scores.get("faithfulness_score"),
+            "faithfulness_reasoning": scores.get("faithfulness_reasoning"),
             "relevance": scores.get("relevance_score"),
+            "relevance_reasoning": scores.get("relevance_reasoning"),
             "rouge_l": rouge_l,
             "safety_rejected": rejected,
             "judge_model_used": scores.get("_judge_model_used"),
