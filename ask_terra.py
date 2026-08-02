@@ -17,18 +17,24 @@ if not api_key:
     raise KeyError("GEMINI_API_KEY environment variable is not set. Please configure it in a local .env file.")
 client = genai.Client(api_key=api_key)
 
-# Configure DeepSeek Client (OpenAI-compatible interface — replaces Groq, v25)
+# Configure AWS Bedrock Mantle Client (v28 — replaces DeepSeek-direct)
+# Base URL: https://bedrock-mantle.us-east-1.api.aws/v1
+# Authentication: AWS_BEARER_TOKEN_BEDROCK bearer token
 import openai
-deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
-if not deepseek_api_key:
+bedrock_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+if not bedrock_token:
     raise KeyError(
-        "DEEPSEEK_API_KEY environment variable is not set. "
-        "Add it to your .env file as: DEEPSEEK_API_KEY=<your key>"
+        "AWS_BEARER_TOKEN_BEDROCK environment variable is not set. "
+        "Add it to your .env file as: AWS_BEARER_TOKEN_BEDROCK=<your token>"
     )
 openai_client = openai.OpenAI(
-    api_key=deepseek_api_key,
-    base_url="https://api.deepseek.com"
+    api_key=bedrock_token,
+    base_url="https://bedrock-mantle.us-east-1.api.aws/v1"
 )
+
+# [ROLLBACK BACKUP] DeepSeek Direct Client (commented out for fast revert if needed):
+# deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
+# openai_client = openai.OpenAI(api_key=deepseek_api_key, base_url="https://api.deepseek.com")
 
 def clean_json_text(text: str) -> str:
     text = text.strip()
@@ -150,18 +156,18 @@ def generate_content_with_retry_openai(openai_client, model, contents, config=No
     if len(contents) > 100000:
         contents = contents[:100000] + "\n...[Context truncated to 100000 chars — safety cap, well within DeepSeek 1M-token limit]..."
 
-    # Model mapping: internal Gemini/Gemma alias -> actual DeepSeek model name (v25)
+    # Model mapping: internal Gemini/Gemma alias -> actual Bedrock model ID (v28)
     model_mapping = {
         # Fast tier: routing, EASY-path, baselines, Smart Grader first attempt
-        "gemma-4-26b-a4b-it-fast": "deepseek-v4-flash",
-        "gemini-3.1-flash-lite":   "deepseek-v4-flash",
+        "gemma-4-26b-a4b-it-fast": "mistral.ministral-3-8b-instruct",
+        "gemini-3.1-flash-lite":   "mistral.ministral-3-8b-instruct",
         # Strong tier: Smart Grader NLI, HARD-path generation, complex queries
-        "gemma-4-26b-a4b-it":      "deepseek-v4-pro",
-        "gemma-4-31b-it":          "deepseek-v4-pro",
-        "gemini-flash-latest":     "deepseek-v4-pro",
-        "gemini-3.5-flash":        "deepseek-v4-pro",
-        "gemini-3-flash-preview":  "deepseek-v4-pro",
-        "gemini-2.5-flash":        "deepseek-v4-pro",
+        "gemma-4-26b-a4b-it":      "deepseek.v3.2",
+        "gemma-4-31b-it":          "deepseek.v3.2",
+        "gemini-flash-latest":     "deepseek.v3.2",
+        "gemini-3.5-flash":        "deepseek.v3.2",
+        "gemini-3-flash-preview":  "deepseek.v3.2",
+        "gemini-2.5-flash":        "deepseek.v3.2",
     }
     openai_model = model_mapping.get(model, model)
 
@@ -175,8 +181,9 @@ def generate_content_with_retry_openai(openai_client, model, contents, config=No
                 is_json = True
 
     import openai
-    # Fallback: pro first, then flash. If both fail -> RuntimeError (never cross into Gemini).
-    candidate_models = [openai_model, "deepseek-v4-pro", "deepseek-v4-flash"]
+    # Fallback chain strictly on Bedrock (never cross into Gemini client):
+    # primary -> deepseek.v3.2 -> qwen3-235b -> ministral-3-8b
+    candidate_models = [openai_model, "deepseek.v3.2", "qwen.qwen3-235b-a22b-2507", "mistral.ministral-3-8b-instruct"]
     seen = set()
     models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
 
@@ -481,8 +488,8 @@ def terra_inference_engine(user_query, return_timing=False):
         _timing['total_ms'] = round((time.time() - _t_start) * 1000, 2)
         _timing['_generation_model_used'] = response.model_used
         _timing['_retry_sleep_ms'] = getattr(response, 'retry_sleep_ms', 0.0)
-        # model_degraded: True if fell back from deepseek-v4-flash (fast tier)
-        _timing['_model_degraded'] = (response.model_used != 'deepseek-v4-flash')
+        # model_degraded: True if fell back from mistral.ministral-3-8b-instruct (fast tier)
+        _timing['_model_degraded'] = (response.model_used != 'mistral.ministral-3-8b-instruct')
         if return_timing:
             return response.text.strip(), "Direct LLM (No RAG Context)", _timing
         return response.text.strip(), "Direct LLM (No RAG Context)"
@@ -556,8 +563,8 @@ def terra_inference_engine(user_query, return_timing=False):
     _timing['total_ms'] = round((time.time() - _t_start) * 1000, 2)
     _timing['_generation_model_used'] = response.model_used
     _timing['_retry_sleep_ms'] = getattr(response, 'retry_sleep_ms', 0.0)
-    # model_degraded: True if fell back from deepseek-v4-pro (strong tier)
-    _timing['_model_degraded'] = (response.model_used != 'deepseek-v4-pro')
+    # model_degraded: True if fell back from deepseek.v3.2 (strong tier)
+    _timing['_model_degraded'] = (response.model_used != 'deepseek.v3.2')
     if return_timing:
         return response.text.strip(), full_compiled_context, _timing
     return response.text.strip(), full_compiled_context
