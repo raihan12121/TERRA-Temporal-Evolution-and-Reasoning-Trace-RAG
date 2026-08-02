@@ -459,15 +459,36 @@ def judge_answer(query: str, context: str, answer: str, is_direct_llm=False) -> 
 
 
     try:
-        response = generate_content_with_retry(
-            client=judge_client, model="gemini-flash-latest", contents=prompt,
-            config={'response_mime_type': 'application/json', 'response_schema': EvaluationMetrics}
+        # v30 migration: Judge on Bedrock Mantle using dedicated Qwen3-235B model.
+        # Completely independent of generation models (deepseek.v3.2 / mistral.ministral-3-8b-instruct).
+        # Eliminates Google AI Studio daily quota caps.
+        response = generate_content_with_retry_openai(
+            openai_client=openai_client,
+            model="qwen.qwen3-235b-a22b-2507",
+            contents=prompt,
+            config={'response_mime_type': 'application/json'}
         )
+        # [ROLLBACK BACKUP] Gemini Judge Call (commented out):
+        # response = generate_content_with_retry(
+        #     client=judge_client, model="gemini-flash-latest", contents=prompt,
+        #     config={'response_mime_type': 'application/json', 'response_schema': EvaluationMetrics}
+        # )
         result = json.loads(response.text)
-        result["_judge_model_used"] = response.model_used
-        # Problem 2 close (v23 Step 23.8): expose judge-side retry sleep
-        result["_judge_retry_sleep_ms"] = getattr(response, 'retry_sleep_ms', 0.0)
-        return result
+        f_val = result.get("faithfulness_score") if result.get("faithfulness_score") is not None else (
+            result.get("faithfulness") if result.get("faithfulness") is not None else result.get("Faithfulness")
+        )
+        r_val = result.get("relevance_score") if result.get("relevance_score") is not None else (
+            result.get("relevance") if result.get("relevance") is not None else result.get("Relevance")
+        )
+        norm_result = {
+            "faithfulness_score": float(f_val) if f_val is not None else None,
+            "faithfulness_reasoning": str(result.get("faithfulness_reasoning", result.get("faithfulness_explanation", result.get("reasoning", "")))),
+            "relevance_score": float(r_val) if r_val is not None else None,
+            "relevance_reasoning": str(result.get("relevance_reasoning", result.get("relevance_explanation", result.get("reasoning", "")))),
+            "_judge_model_used": response.model_used,
+            "_judge_retry_sleep_ms": getattr(response, 'retry_sleep_ms', 0.0)
+        }
+        return norm_result
     except Exception as e:
         print(f"  [JUDGE ERROR] {e}")
         # Return None instead of 0.0 to avoid poisoning averages.
