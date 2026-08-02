@@ -365,13 +365,16 @@ def direct_llm_inference(query: str) -> tuple:
             contents=f"Answer this legal query briefly: {query}"
         )
         ans = response.text.strip()
-        gen_model = response.model_used
+        gen_model = getattr(response, 'model_used', None)
+        retry_sleep = getattr(response, 'retry_sleep_ms', 0.0)
     except Exception as e:
         ans = f"Error: {e}"
+        retry_sleep = 0.0
     latency = round((time.time() - t0) * 1000, 2)
     timing = {"routing_ms": 0, "retrieval_ms": 0, "grading_ms": 0,
               "generation_ms": latency, "total_ms": latency,
-              "_generation_model_used": gen_model}
+              "_generation_model_used": gen_model,
+              "_retry_sleep_ms": retry_sleep}
     return ans, "", timing
 
 
@@ -379,6 +382,7 @@ def flat_rag_inference(query: str) -> tuple:
     """Baseline 2: Flat vector RAG (no citation graph, no smart grader)."""
     t0 = time.time()
     gen_model = None
+    retry_sleep = 0.0
     try:
         results = collection.query(query_texts=[query], n_results=2)
         traces = results.get('documents', [[]])[0]
@@ -396,6 +400,7 @@ def flat_rag_inference(query: str) -> tuple:
         )
         ans = response.text.strip()
         gen_model = response.model_used
+        retry_sleep = getattr(response, 'retry_sleep_ms', 0.0)
         gen_ms = round((time.time() - t1) * 1000, 2)
         total_ms = round((time.time() - t0) * 1000, 2)
     except Exception as e:
@@ -403,7 +408,8 @@ def flat_rag_inference(query: str) -> tuple:
 
     timing = {"routing_ms": 0, "retrieval_ms": retrieval_ms, "grading_ms": 0,
               "generation_ms": gen_ms, "total_ms": total_ms,
-              "_generation_model_used": gen_model}
+              "_generation_model_used": gen_model,
+              "_retry_sleep_ms": retry_sleep}
     return ans, context, timing
 
 
@@ -450,11 +456,13 @@ def judge_answer(query: str, context: str, answer: str, is_direct_llm=False) -> 
 
     try:
         response = generate_content_with_retry(
-            client=judge_client, model="gemini-2.5-flash", contents=prompt,
+            client=judge_client, model="gemini-flash-latest", contents=prompt,
             config={'response_mime_type': 'application/json', 'response_schema': EvaluationMetrics}
         )
         result = json.loads(response.text)
         result["_judge_model_used"] = response.model_used
+        # Problem 2 close (v23 Step 23.8): expose judge-side retry sleep
+        result["_judge_retry_sleep_ms"] = getattr(response, 'retry_sleep_ms', 0.0)
         return result
     except Exception as e:
         print(f"  [JUDGE ERROR] {e}")
@@ -547,6 +555,8 @@ def run_evaluation_suite(resume=False, raw_output="terra_eval_raw.json"):
                 "safety_rejected": rejected,
                 "judge_model_used": scores.get("_judge_model_used"),
                 "generation_model_used": timing.get("_generation_model_used"),
+                # Part B (v25): model_degraded — True if generation fell back from requested tier
+                "model_degraded": timing.get("_model_degraded", False),
                 "timing": timing,
             }
             results_log.append(record)
@@ -811,7 +821,7 @@ def run_generation_only(resume=False, raw_output="terra_generations.json"):
             print(f"    Done. Latency: {timing.get('total_ms', 0):.0f}ms | "
                   f"Model: {timing.get('_generation_model_used', 'unknown')}")
             sys.stdout.flush()
-        time.sleep(4)
+        time.sleep(0.5)
     print(f"\n[DONE] {len(results_log)} generations saved to {raw_output}")
 
 
@@ -851,8 +861,16 @@ def run_judging_only(gen_input="terra_generations.json", raw_output="terra_eval_
 
         print(f"[Judge] {qid} ({category}) / {pipeline_name}...")
         is_direct = (pipeline_name == "1_Direct_LLM") or (ctx == "Direct LLM (No RAG Context)") or not ctx.strip()
+        # Problem 1 fix (v22): retry once if judge returns None scores (judge error)
         scores = judge_answer(query, ctx, ans, is_direct_llm=is_direct)
+        if scores.get("faithfulness_score") is None and not scores.get("judge_error"):
+            pass  # None score without error flag is unexpected — accept it
+        elif scores.get("faithfulness_score") is None:
+            print(f"  [JUDGE RETRY] Got None score on first attempt. Retrying after 5s...")
+            time.sleep(5)
+            scores = judge_answer(query, ctx, ans, is_direct_llm=is_direct)
         time.sleep(1)
+
 
         rouge_l = compute_rouge_l(ans, reference) if reference and not is_safety_refusal(ans) else None
         rejected = is_safety_refusal(ans)
@@ -871,7 +889,10 @@ def run_judging_only(gen_input="terra_generations.json", raw_output="terra_eval_
             "rouge_l": rouge_l,
             "safety_rejected": rejected,
             "judge_model_used": scores.get("_judge_model_used"),
+            "judge_retry_sleep_ms": scores.get("_judge_retry_sleep_ms", 0.0),
             "generation_model_used": g.get("timing", {}).get("_generation_model_used"),
+            # Part B (v25): model_degraded — True if generation fell back from requested tier
+            "model_degraded": g.get("timing", {}).get("_model_degraded", False),
             "timing": g.get("timing", {}),
         }
         results_log.append(record)

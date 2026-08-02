@@ -17,12 +17,18 @@ if not api_key:
     raise KeyError("GEMINI_API_KEY environment variable is not set. Please configure it in a local .env file.")
 client = genai.Client(api_key=api_key)
 
-# Configure OpenAI Client
+# Configure DeepSeek Client (OpenAI-compatible interface — replaces Groq, v25)
 import openai
-openai_api_key = os.environ.get("OPENAI_API_KEY")
-if not openai_api_key:
-    raise KeyError("OPENAI_API_KEY environment variable is not set. Please configure it in a local .env file.")
-openai_client = openai.OpenAI(api_key=openai_api_key)
+deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY")
+if not deepseek_api_key:
+    raise KeyError(
+        "DEEPSEEK_API_KEY environment variable is not set. "
+        "Add it to your .env file as: DEEPSEEK_API_KEY=<your key>"
+    )
+openai_client = openai.OpenAI(
+    api_key=deepseek_api_key,
+    base_url="https://api.deepseek.com"
+)
 
 def clean_json_text(text: str) -> str:
     text = text.strip()
@@ -43,10 +49,11 @@ def clean_json_text(text: str) -> str:
     return text
 
 class CleanResponse:
-    def __init__(self, orig_resp, is_json=False, model_used=None):
+    def __init__(self, orig_resp, is_json=False, model_used=None, retry_sleep_ms=0.0):
         self._orig = orig_resp
         self._is_json = is_json
         self.model_used = model_used
+        self.retry_sleep_ms = retry_sleep_ms
     @property
     def text(self):
         t = self._orig.text
@@ -76,6 +83,7 @@ def generate_content_with_retry(client, model, contents, config=None, max_retrie
     seen = set()
     models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
 
+    retry_sleep_ms = 0.0
     for m in models_to_try:
         m_str = m.name.lower() if hasattr(m, "name") else str(m).lower()
         is_unlimited_daily = ("gemma" in m_str)
@@ -101,18 +109,20 @@ def generate_content_with_retry(client, model, contents, config=None, max_retrie
                     contents=call_contents,
                     config=call_config
                 )
-                return CleanResponse(r, is_json=is_json, model_used=m)
+                time.sleep(2.5)  # Throttle to stay under Gemini 15 RPM free tier limit
+                return CleanResponse(r, is_json=is_json, model_used=m, retry_sleep_ms=retry_sleep_ms)
             except Exception as e:
                 err_str = str(e)
-                if "Quota exceeded" in err_str and ("500" in err_str or "GenerateRequestsPerDay" in err_str):
+                if "GenerateRequestsPerDay" in err_str or "QuotaExceededPerDay" in err_str:
                     print(f"[QUOTA FALLBACK] Daily quota exceeded for {m}. Trying next candidate model...")
                     sys.stdout.flush()
                     break  # Break inner loop to try next model right away
-                elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "UNAVAILABLE" in err_str:
-                    wait_time = 20
+                elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "500" in err_str or "503" in err_str or "UNAVAILABLE" in err_str:
+                    wait_time = 10
                     print(f"Rate limited or server busy on {m}. Sleeping for {wait_time}s before retry (Attempt {attempt+1}/{effective_retries})...")
                     sys.stdout.flush()
                     time.sleep(wait_time)
+                    retry_sleep_ms += wait_time * 1000.0
                 else:
                     print(f"[MODEL ERROR] Error on {m}: {e}. Trying next candidate model...")
                     sys.stdout.flush()
@@ -120,10 +130,11 @@ def generate_content_with_retry(client, model, contents, config=None, max_retrie
     raise RuntimeError("Failed to generate content after maximum retries and model fallbacks due to rate limiting or model errors.")
 
 class CleanResponseOpenAI:
-    def __init__(self, text, is_json=False, model_used=None):
+    def __init__(self, text, is_json=False, model_used=None, retry_sleep_ms=0.0):
         self._text = text
         self._is_json = is_json
         self.model_used = model_used
+        self.retry_sleep_ms = retry_sleep_ms
     @property
     def text(self):
         t = self._text
@@ -132,18 +143,23 @@ class CleanResponseOpenAI:
         return t
 
 def generate_content_with_retry_openai(openai_client, model, contents, config=None, max_retries=5):
+    if len(contents) > 25000:
+        contents = contents[:25000] + "\n...[Context truncated to 25000 chars]..."
+    # Model mapping: internal Gemini/Gemma alias -> actual DeepSeek model name (v25)
     model_mapping = {
-        "gemma-4-26b-a4b-it-fast": "gpt-4o-mini",
-        "gemma-4-26b-a4b-it": "gpt-4o",
-        "gemma-4-31b-it": "gpt-4o",
-        "gemini-flash-latest": "gpt-4o",
-        "gemini-3.5-flash": "gpt-4o",
-        "gemini-3-flash-preview": "gpt-4o",
-        "gemini-3.1-flash-lite": "gpt-4o",
-        "gemini-2.5-flash": "gpt-4o",
+        # Fast tier: routing, EASY-path, baselines, Smart Grader first attempt
+        "gemma-4-26b-a4b-it-fast": "deepseek-v4-flash",
+        "gemini-3.1-flash-lite":   "deepseek-v4-flash",
+        # Strong tier: Smart Grader NLI, HARD-path generation, complex queries
+        "gemma-4-26b-a4b-it":      "deepseek-v4-pro",
+        "gemma-4-31b-it":          "deepseek-v4-pro",
+        "gemini-flash-latest":     "deepseek-v4-pro",
+        "gemini-3.5-flash":        "deepseek-v4-pro",
+        "gemini-3-flash-preview":  "deepseek-v4-pro",
+        "gemini-2.5-flash":        "deepseek-v4-pro",
     }
     openai_model = model_mapping.get(model, model)
-    
+
     is_json = False
     if config:
         if isinstance(config, dict):
@@ -154,10 +170,12 @@ def generate_content_with_retry_openai(openai_client, model, contents, config=No
                 is_json = True
 
     import openai
-    candidate_models = [openai_model, "gpt-4o", "gpt-4o-mini"]
+    # Fallback: pro first, then flash. If both fail -> RuntimeError (never cross into Gemini).
+    candidate_models = [openai_model, "deepseek-v4-pro", "deepseek-v4-flash"]
     seen = set()
     models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
 
+    retry_sleep_ms = 0.0
     for m in models_to_try:
         for attempt in range(max_retries):
             try:
@@ -167,7 +185,7 @@ def generate_content_with_retry_openai(openai_client, model, contents, config=No
                     if "json" not in call_contents.lower():
                         call_contents += "\n\nIMPORTANT: Output strictly a valid JSON object."
                     extra_args["response_format"] = {"type": "json_object"}
-                    
+
                 messages = [{"role": "user", "content": call_contents}]
                 response = openai_client.chat.completions.create(
                     model=m,
@@ -176,23 +194,36 @@ def generate_content_with_retry_openai(openai_client, model, contents, config=No
                     **extra_args
                 )
                 text_content = response.choices[0].message.content
-                return CleanResponseOpenAI(text_content, is_json=is_json, model_used=m)
+                return CleanResponseOpenAI(text_content, is_json=is_json, model_used=m, retry_sleep_ms=retry_sleep_ms)
             except (openai.RateLimitError, openai.APIStatusError) as e:
                 err_str = str(e)
+                if "413" in err_str or "Request too large" in err_str or "tokens per minute" in err_str:
+                    # v22 fix retained: do NOT cross into Gemini client.
+                    # Fall through to next (smaller) DeepSeek candidate model.
+                    print(f"[DEEPSEEK TPM FALLBACK] Payload too large on {m}. Trying next DeepSeek candidate...")
+                    sys.stdout.flush()
+                    break
+                elif "429" in err_str or "tokens per day" in err_str or "Rate limit" in err_str or "rate_limit_exceeded" in err_str:
+                    print(f"[DEEPSEEK MODEL FALLBACK] Model {m} hit rate limit ({e}). Trying next DeepSeek candidate...")
+                    sys.stdout.flush()
+                    break
                 wait_time = 15 * (attempt + 1)
-                print(f"[OPENAI RETRY] Rate limit or server error on {m}: {e}. Sleeping {wait_time}s (Attempt {attempt+1}/{max_retries})...")
+                print(f"[DEEPSEEK RETRY] Rate limit / server error on {m}: {e}. Sleeping {wait_time}s (Attempt {attempt+1}/{max_retries})...")
                 sys.stdout.flush()
                 time.sleep(wait_time)
+                retry_sleep_ms += wait_time * 1000.0
             except openai.APIConnectionError as e:
                 wait_time = 5
-                print(f"[OPENAI CONN ERROR] Connection error on {m}: {e}. Sleeping {wait_time}s...")
+                print(f"[DEEPSEEK CONN ERROR] Connection error on {m}: {e}. Sleeping {wait_time}s...")
                 sys.stdout.flush()
                 time.sleep(wait_time)
+                retry_sleep_ms += wait_time * 1000.0
             except Exception as e:
-                print(f"[OPENAI ERROR] Unexpected error on {m}: {e}. Trying next candidate model...")
+                print(f"[DEEPSEEK ERROR] Unexpected error on {m}: {e}. Trying next candidate...")
                 sys.stdout.flush()
                 break
-    raise RuntimeError("Failed to generate content via OpenAI after maximum retries and model fallbacks.")
+    raise RuntimeError("Failed to generate content via DeepSeek after maximum retries and model fallbacks.")
+
 
 # 2. Reconstruct the Event Evolution Graph (EEG)
 print("Loading Event Evolution Graph...")
@@ -306,8 +337,20 @@ def smart_grader(user_query: str, retrieved_context: str) -> bool:
             config={'response_mime_type': 'application/json', 'response_schema': GradeDecision}
         )
         result = json.loads(response.text)
-        print(f"[SMART GRADER] Entailment Passed: {result['entails']} | Confidence: {result['confidence_score']}")
-        return result['entails']
+        raw_entails = result.get('entails') if 'entails' in result else result.get('entailment', False)
+        # v23 Step 23.7: strict boolean validation — only literal True or string "true"
+        # is treated as passing. "PARTIAL", "partial", or any other truthy non-boolean
+        # value is treated as False (triggers retry-expansion or refusal).
+        if isinstance(raw_entails, bool):
+            entails = raw_entails
+        elif isinstance(raw_entails, str):
+            entails = raw_entails.strip().lower() == 'true'
+        else:
+            entails = False  # anything else (int, None, etc.) is treated as False
+        confidence = result.get('confidence_score') if 'confidence_score' in result else result.get('confidence', 0.95)
+        print(f"[SMART GRADER] Entailment Passed: {entails} | Confidence: {confidence}")
+        return bool(entails)
+
     except Exception as e:
         print(f"[SMART GRADER ERROR] Assuming True for safety. Error: {e}")
         return True
@@ -317,65 +360,96 @@ def smart_grader(user_query: str, retrieved_context: str) -> bool:
 
 def extract_graph_context(retrieved_metadatas, max_depth=2) -> str:
     """
-    Upgraded Graph Trajectory Extractor (Fixes Issue 2 & 3).
-    Performs multi-hop traversal (depth up to max_depth) and uses safe dict lookups.
+    Graph Trajectory Extractor — v23 (Problem 3 final fix).
+    Three additions over the structural-only version:
+    1. Node text: each traversed node's actual 'text' field is included in context.
+    2. Deduplication: a node is added to context exactly once, regardless of
+       how many traversal paths reach it (visited_nodes set already existed,
+       but context was appended before the set-add guard — fixed).
+    3. Hub-cap: nodes with total degree > HUB_DEGREE_CAP are not expanded
+       into the BFS queue (their title+text are still included if reached),
+       preventing C007 Plessy (degree 379) from flooding context with 300+
+       synthetic successors.
     """
+    HUB_DEGREE_CAP = 50  # do not expand nodes with degree above this
     structural_context = ""
     visited_nodes = set()
-    
-    # We will traverse starting from the cases retrieved in the vector search
+
     queue = []
     for meta in retrieved_metadatas:
         case_id = meta.get('case_id')
         if case_id and eeg.has_node(case_id):
-            queue.append((case_id, 0)) # Store (node, current_depth)
-            
+            queue.append((case_id, 0))
+
     while queue:
         current_id, depth = queue.pop(0)
-        
+
         if current_id in visited_nodes or depth > max_depth:
             continue
-            
+
         visited_nodes.add(current_id)
-        
-        # FIX ISSUE 3: Safe dictionary access for the current node
+
+        # Safe dictionary access for the current node
         current_node_data = eeg.nodes.get(current_id, {})
         current_title = current_node_data.get('title', current_id)
-        
-        structural_context += f"\n--- Structural Path for {current_title} (Case ID: {current_id}) (Depth {depth}) ---\n"
-        
-        # Safe Neighbor/Successor Traversal
-        if eeg.has_node(current_id):
-            # Check outgoing relations (e.g., who this case overrules/precedes)
+        current_text  = current_node_data.get('text', '').strip()
+
+        structural_context += (
+            f"\n--- Node: {current_title} (Case ID: {current_id}, Depth {depth}) ---\n"
+        )
+        # (1) Include actual node text if present
+        if current_text:
+            structural_context += f"[Case Summary/Text]: {current_text}\n"
+
+        # (3) Hub-cap: record title+text but do not expand if degree is extreme
+        node_degree = eeg.degree(current_id)
+        if node_degree > HUB_DEGREE_CAP:
+            structural_context += (
+                f"[Note: High-degree hub node (degree={node_degree}); "
+                f"neighbours not expanded to prevent context overflow.]\n"
+            )
+            # Still emit the hub's own outgoing OVERRULES edges (rare, meaningful)
             for neighbor in eeg.neighbors(current_id):
                 edge_data = eeg.get_edge_data(current_id, neighbor) or {}
-                relation = edge_data.get('relation', 'CONNECTED')
-                
-                # Safe access for neighbor node
-                neighbor_data = eeg.nodes.get(neighbor, {})
-                neighbor_title = neighbor_data.get('title', neighbor)
-                
-                structural_context += f"- LOGICAL RELATION: This case (Case ID: {current_id}) [{relation}] the case: '{neighbor_title}' (Case ID: {neighbor}).\n"
-                
+                if edge_data.get('relation') == 'OVERRULES':
+                    nb_data  = eeg.nodes.get(neighbor, {})
+                    nb_title = nb_data.get('title', neighbor)
+                    structural_context += (
+                        f"- LOGICAL RELATION: This case [{edge_data['relation']}] "
+                        f"'{nb_title}' (Case ID: {neighbor}).\n"
+                    )
+            continue  # do not queue neighbours of hub node
+
+        if eeg.has_node(current_id):
+            # Outgoing relations (who this case overrules/precedes)
+            for neighbor in eeg.neighbors(current_id):
+                edge_data = eeg.get_edge_data(current_id, neighbor) or {}
+                relation  = edge_data.get('relation', 'CONNECTED')
+                nb_data   = eeg.nodes.get(neighbor, {})
+                nb_title  = nb_data.get('title', neighbor)
+                structural_context += (
+                    f"- LOGICAL RELATION: This case (Case ID: {current_id}) "
+                    f"[{relation}] '{nb_title}' (Case ID: {neighbor}).\n"
+                )
                 if neighbor not in visited_nodes and depth + 1 <= max_depth:
                     queue.append((neighbor, depth + 1))
-            
-            # Check predecessors (who chronologically came before)
+
+            # Incoming chronological relations (who preceded this case)
             for predecessor in eeg.predecessors(current_id):
                 edge_data = eeg.get_edge_data(predecessor, current_id) or {}
-                relation = edge_data.get('relation', 'CONNECTED')
-                
-                # Safe access for predecessor node
+                relation  = edge_data.get('relation', 'CONNECTED')
                 pred_data = eeg.nodes.get(predecessor, {})
                 pred_title = pred_data.get('title', predecessor)
-                
                 if relation == "PRECEDES":
-                    structural_context += f"- CHRONOLOGICAL FLOW: The older case '{pred_title}' (Case ID: {predecessor}) historically [PRECEDES] this case (Case ID: {current_id}).\n"
-                
+                    structural_context += (
+                        f"- CHRONOLOGICAL FLOW: '{pred_title}' (Case ID: {predecessor}) "
+                        f"historically [PRECEDES] this case (Case ID: {current_id}).\n"
+                    )
                 if predecessor not in visited_nodes and depth + 1 <= max_depth:
                     queue.append((predecessor, depth + 1))
-                    
+
     return structural_context
+
 
 
 # --- MAIN INFERENCE ENGINE ---
@@ -401,6 +475,9 @@ def terra_inference_engine(user_query, return_timing=False):
         _timing['grading_ms'] = 0.0
         _timing['total_ms'] = round((time.time() - _t_start) * 1000, 2)
         _timing['_generation_model_used'] = response.model_used
+        _timing['_retry_sleep_ms'] = getattr(response, 'retry_sleep_ms', 0.0)
+        # model_degraded: True if fell back from deepseek-v4-flash (fast tier)
+        _timing['_model_degraded'] = (response.model_used != 'deepseek-v4-flash')
         if return_timing:
             return response.text.strip(), "Direct LLM (No RAG Context)", _timing
         return response.text.strip(), "Direct LLM (No RAG Context)"
@@ -441,6 +518,8 @@ def terra_inference_engine(user_query, return_timing=False):
         _timing['generation_ms'] = 0.0
         _timing['total_ms'] = round((time.time() - _t_start) * 1000, 2)
         _timing['_generation_model_used'] = None
+        _timing['_retry_sleep_ms'] = 0.0
+        _timing['_model_degraded'] = False  # refusal: no generation, not degraded
         refusal = "I apologize, but I do not have sufficient validated legal context in my databases to answer this query accurately without risking hallucination."
         if return_timing:
             return refusal, full_compiled_context, _timing
@@ -471,6 +550,9 @@ def terra_inference_engine(user_query, return_timing=False):
     _timing['generation_ms'] = round((time.time() - _t0) * 1000, 2)
     _timing['total_ms'] = round((time.time() - _t_start) * 1000, 2)
     _timing['_generation_model_used'] = response.model_used
+    _timing['_retry_sleep_ms'] = getattr(response, 'retry_sleep_ms', 0.0)
+    # model_degraded: True if fell back from deepseek-v4-pro (strong tier)
+    _timing['_model_degraded'] = (response.model_used != 'deepseek-v4-pro')
     if return_timing:
         return response.text.strip(), full_compiled_context, _timing
     return response.text.strip(), full_compiled_context
