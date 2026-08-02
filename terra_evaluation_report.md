@@ -6,43 +6,43 @@ Benchmark: 35 queries across 4 categories, 3 pipelines. Metrics: Faithfulness, R
 
 | Pipeline         |   Faithfulness (mean) | Faithfulness (+-SD)   |   Relevance (mean) | Relevance (+-SD)   |   ROUGE-L (mean) | Safety Rejected   |   Latency (mean ms) |
 |------------------|-----------------------|-----------------------|--------------------|--------------------|------------------|-------------------|---------------------|
-| 1 Direct LLM     |                 0.943 | +-0.236               |              1     | +-0.000            |            0.478 | 0/15              |               13310 |
-| 2 Flat RAG       |                 0.971 | +-0.169               |              0.951 | +-0.203            |            0.301 | 14/15             |               12788 |
-| 3 TERRA GraphRAG |                 0.772 | +-0.399               |              0.838 | +-0.363            |            0.259 | 15/15             |              376331 |
+| 1 Direct LLM     |                 0.257 | +-0.443               |              0.291 | +-0.416            |            0.392 | 0/15              |                 968 |
+| 2 Flat RAG       |                 0.8   | +-0.338               |              0.76  | +-0.280            |            0.325 | 15/15             |                1233 |
+| 3 TERRA GraphRAG |                 0.816 | +-0.353               |              0.443 | +-0.435            |            0.38  | 15/15             |                6272 |
 
 ## Per-Category Breakdown
 
 | Category       | Pipeline         |   n |   Faithfulness | ROUGE-L   |   Safety Rejections |
 |----------------|------------------|-----|----------------|-----------|---------------------|
-| A_Factual      | 1 Direct LLM     |  10 |          1     | 0.692     |                   0 |
-| A_Factual      | 2 Flat RAG       |  10 |          1     | 0.357     |                   1 |
-| A_Factual      | 3 TERRA GraphRAG |  10 |          1     | 0.275     |                   0 |
-| B_Evolutionary | 1 Direct LLM     |  10 |          1     | 0.265     |                   0 |
-| B_Evolutionary | 2 Flat RAG       |  10 |          0.9   | 0.229     |                   3 |
-| B_Evolutionary | 3 TERRA GraphRAG |  10 |          0.325 | 0.237     |                   3 |
-| C_OutOfContext | 1 Direct LLM     |  10 |          0.8   | N/A       |                   0 |
+| A_Factual      | 1 Direct LLM     |  10 |          0.5   | 0.556     |                   0 |
+| A_Factual      | 2 Flat RAG       |  10 |          0.81  | 0.500     |                   3 |
+| A_Factual      | 3 TERRA GraphRAG |  10 |          0.7   | 0.498     |                   0 |
+| B_Evolutionary | 1 Direct LLM     |  10 |          0     | 0.228     |                   0 |
+| B_Evolutionary | 2 Flat RAG       |  10 |          0.49  | 0.189     |                   1 |
+| B_Evolutionary | 3 TERRA GraphRAG |  10 |          0.655 | 0.233     |                   2 |
+| C_OutOfContext | 1 Direct LLM     |  10 |          0.1   | N/A       |                   0 |
 | C_OutOfContext | 2 Flat RAG       |  10 |          1     | N/A       |                  10 |
-| C_OutOfContext | 3 TERRA GraphRAG |  10 |          0.889 | N/A       |                  10 |
-| D_Adversarial  | 1 Direct LLM     |   5 |          1     | N/A       |                   0 |
-| D_Adversarial  | 2 Flat RAG       |   5 |          1     | N/A       |                   4 |
+| C_OutOfContext | 3 TERRA GraphRAG |  10 |          1     | N/A       |                  10 |
+| D_Adversarial  | 1 Direct LLM     |   5 |          0.6   | N/A       |                   0 |
+| D_Adversarial  | 2 Flat RAG       |   5 |          1     | N/A       |                   5 |
 | D_Adversarial  | 3 TERRA GraphRAG |   5 |          1     | N/A       |                   5 |
 
 ## Latency Breakdown (mean +/- SD, milliseconds)
 
-| Pipeline         | Routing (ms)   | Retrieval (ms)   | Grading (ms)    | Generation (ms)   | Total (ms)      |
-|------------------|----------------|------------------|-----------------|-------------------|-----------------|
-| 1 Direct LLM     | 0 +-0          | 0 +-0            | 0 +-0           | 13310 +-7176      | 13310 +-7176    |
-| 2 Flat RAG       | 0 +-0          | 217 +-87         | 0 +-0           | 12571 +-14476     | 12788 +-14482   |
-| 3 TERRA GraphRAG | 14172 +-4616   | 161 +-114        | 171445 +-117647 | 53571 +-105092    | 376331 +-238039 |
+| Pipeline         | Routing (ms)   | Retrieval (ms)   | Grading (ms)   | Generation (ms)   | Total (ms)   |
+|------------------|----------------|------------------|----------------|-------------------|--------------|
+| 1 Direct LLM     | 0 +-0          | 0 +-0            | 0 +-0          | 968 +-534         | 968 +-534    |
+| 2 Flat RAG       | 0 +-0          | 271 +-136        | 0 +-0          | 961 +-642         | 1233 +-672   |
+| 3 TERRA GraphRAG | 1393 +-2436    | 176 +-130        | 1809 +-1486    | 1173 +-2142       | 6272 +-4370  |
 
 ## Statistical Significance (Wilcoxon Signed-Rank, Categories A+B)
 
 | Metric       | Comparison          |   n |   Wilcoxon stat |   p-value | Significant (p<0.05)   |
 |--------------|---------------------|-----|-----------------|-----------|------------------------|
-| Faithfulness | TERRA vs Flat RAG   |  20 |               0 |    0.0235 | Yes                    |
-| Faithfulness | TERRA vs Direct LLM |  20 |               0 |    0.0141 | Yes                    |
-| ROUGE-L      | TERRA vs Flat RAG   |  16 |              58 |    0.9096 | No                     |
-| ROUGE-L      | TERRA vs Direct LLM |  17 |              26 |    0.0298 | Yes                    |
+| Faithfulness | TERRA vs Flat RAG   |  20 |              35 |    0.7529 | No                     |
+| Faithfulness | TERRA vs Direct LLM |  20 |               0 |    0.0019 | Yes                    |
+| ROUGE-L      | TERRA vs Flat RAG   |  16 |              42 |    0.1928 | No                     |
+| ROUGE-L      | TERRA vs Direct LLM |  18 |              63 |    0.796  | No                     |
 
 ## Notes on Evaluation Methodology
 
